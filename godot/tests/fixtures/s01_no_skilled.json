@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "1",
+  "id": "s01_no_skilled",
+  "skill": "s01-shake-the-hive",
+  "title": "校验样本：无 skilled 选项",
+  "context": "情境背景（占位，仅用于校验器单测）。",
+  "npc": { "name": "小陈", "role": "下属", "mood": "defensive" },
+  "impulse": "冲动占位。",
+  "triggers": {
+    "candidates": ["A", "B"],
+    "correct": "A"
+  },
+  "choices": [
+    {
+      "id": "c1",
+      "type": "trap",
+      "text": "陷阱选项（占位）。",
+      "consequence": { "npcReaction": "r", "relationshipSignal": -1, "judgement": "j" }
+    },
+    {
+      "id": "c2",
+      "type": "boundary",
+      "text": "边界选项（占位）。",
+      "consequence": { "npcReaction": "r", "relationshipSignal": 0, "judgement": "j" }
+    }
+  ],
+  "review": {
+    "mechanism": "m",
+    "case": "c",
+    "migration": "g"
+  }
+}

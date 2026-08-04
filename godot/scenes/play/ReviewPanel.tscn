@@ -1,0 +1,47 @@
+[gd_scene load_steps=1 format=3]
+
+[node name="ReviewPanel" type="VBoxContainer"]
+layout_mode = 2
+theme_override_constants/separation = 20
+
+[node name="SkillLabel" type="Label" parent="."]
+layout_mode = 1
+text = "（技巧将由数据填充）"
+
+[node name="MechanismLabel" type="Label" parent="."]
+layout_mode = 1
+text = "（机制将由数据填充）"
+autowrap_mode = 2
+
+[node name="CaseSection" type="VBoxContainer" parent="."]
+layout_mode = 1
+theme_override_constants/separation = 8
+
+[node name="CaseLabel" type="Label" parent="CaseSection"]
+layout_mode = 1
+text = "（案例将由数据填充）"
+autowrap_mode = 2
+
+[node name="MigrationLabel" type="Label" parent="."]
+layout_mode = 1
+text = "（迁移将由数据填充）"
+autowrap_mode = 2
+
+[node name="NavRow" type="HBoxContainer" parent="."]
+layout_mode = 1
+theme_override_constants/separation = 16
+
+[node name="ReplayButton" type="Button" parent="NavRow"]
+layout_mode = 1
+custom_minimum_size = Vector2(0, 56)
+text = "再练一次"
+
+[node name="NextButton" type="Button" parent="NavRow"]
+layout_mode = 1
+custom_minimum_size = Vector2(0, 56)
+text = "下一场景"
+
+[node name="MapButton" type="Button" parent="NavRow"]
+layout_mode = 1
+custom_minimum_size = Vector2(0, 56)
+text = "返回地图"

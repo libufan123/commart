@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "1",
+  "id": "s01_no_review_case",
+  "skill": "s01-shake-the-hive",
+  "title": "校验样本：review.case 缺失（应降级放行）",
+  "context": "情境背景（占位，仅用于校验器单测）。",
+  "npc": { "name": "小陈", "role": "下属", "mood": "defensive" },
+  "impulse": "冲动占位。",
+  "triggers": {
+    "candidates": ["A", "B"],
+    "correct": "A"
+  },
+  "choices": [
+    {
+      "id": "c1",
+      "type": "skilled",
+      "text": "熟练选项（占位）。",
+      "consequence": { "npcReaction": "r", "relationshipSignal": 1, "judgement": "j" }
+    }
+  ],
+  "review": {
+    "mechanism": "m（机制原理，占位）",
+    "migration": "g（迁移线索，占位）"
+  }
+}

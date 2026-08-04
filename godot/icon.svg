@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192" role="img" aria-label="沟通的艺术 启动图标：蜜蜂与蜂巢">
+  <defs>
+    <clipPath id="bodyClip">
+      <ellipse cx="97" cy="108" rx="34" ry="25"/>
+    </clipPath>
+  </defs>
+
+  <!-- 暖中性底（蜂蜜奶油） -->
+  <rect x="0" y="0" width="192" height="192" rx="40" fill="#F4E7CC"/>
+
+  <!-- 蜂巢点缀（蜂蜜金，顶部右侧） -->
+  <g fill="none" stroke="#E0A53E" stroke-width="4" opacity="0.65" stroke-linejoin="round">
+    <polygon points="138,40 152,48 152,64 138,72 124,64 124,48"/>
+    <polygon points="152,64 166,72 166,88 152,96 138,88 138,72"/>
+    <polygon points="124,64 138,72 138,88 124,96 110,88 110,72"/>
+  </g>
+
+  <!-- 蜜蜂 -->
+  <g>
+    <!-- 翅膀 -->
+    <ellipse cx="84" cy="74" rx="20" ry="12" fill="#FFFFFF" opacity="0.5" transform="rotate(-20 84 74)"/>
+    <ellipse cx="110" cy="74" rx="20" ry="12" fill="#FFFFFF" opacity="0.5" transform="rotate(20 110 74)"/>
+    <!-- 身体 -->
+    <ellipse cx="97" cy="108" rx="34" ry="25" fill="#2E2620"/>
+    <!-- 条纹（蜂蜜金，裁剪到身体内） -->
+    <g clip-path="url(#bodyClip)" fill="#E7A93C">
+      <rect x="78" y="80" width="11" height="56"/>
+      <rect x="97" y="80" width="11" height="56"/>
+      <rect x="116" y="80" width="11" height="56"/>
+    </g>
+    <!-- 触角 -->
+    <path d="M84 88 q-9 -16 -16 -22" fill="none" stroke="#2E2620" stroke-width="4" stroke-linecap="round"/>
+    <path d="M110 88 q9 -16 16 -22" fill="none" stroke="#2E2620" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="66" cy="64" r="4" fill="#2E2620"/>
+    <circle cx="128" cy="64" r="4" fill="#2E2620"/>
+  </g>
+</svg>

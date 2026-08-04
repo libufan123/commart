@@ -1,0 +1,10 @@
+{
+  "skills": [
+    { "id": "s01-shake-the-hive", "title": "不批评 / 打翻蜂巢", "section": 1, "order": 1, "scenes": ["s01_scene_01", "s01_scene_02"] },
+    { "id": "s02-give-what-they-want", "title": "给你想要的东西", "section": 1, "order": 2, "scenes": ["s02_scene_01"] },
+    { "id": "s03-sense-of-importance", "title": "显要感 / 自重感", "section": 1, "order": 3, "scenes": ["s03_scene_01", "s03_scene_02"] },
+    { "id": "s04-genuine-praise-standard", "title": "真诚赞赏", "section": 1, "order": 4, "scenes": ["s04_scene_01"] },
+    { "id": "s05-arouse-eager-want", "title": "唤起迫切欲望", "section": 1, "order": 5, "scenes": ["s05_scene_01"] },
+    { "id": "s06-leadership-by-empathy", "title": "领袖法则·换位思考", "section": 1, "order": 6, "scenes": ["s06_scene_01"] }
+  ]
+}

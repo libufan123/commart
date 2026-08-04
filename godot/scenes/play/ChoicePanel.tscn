@@ -1,0 +1,16 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/systems/ChoiceSystem.gd" id="1_choice"]
+
+[node name="ChoicePanel" type="VBoxContainer"]
+script = ExtResource("1_choice")
+layout_mode = 2
+theme_override_constants/separation = 16
+
+[node name="TitleLabel" type="Label" parent="."]
+layout_mode = 1
+text = "你会怎么回应？"
+
+[node name="ChoiceList" type="VBoxContainer" parent="."]
+layout_mode = 1
+theme_override_constants/separation = 14

@@ -1,0 +1,16 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/systems/TriggerSystem.gd" id="1_trigger"]
+
+[node name="TriggerPanel" type="VBoxContainer"]
+script = ExtResource("1_trigger")
+layout_mode = 2
+theme_override_constants/separation = 16
+
+[node name="TitleLabel" type="Label" parent="."]
+layout_mode = 1
+text = "你看出这是什么处境？"
+
+[node name="TagList" type="VBoxContainer" parent="."]
+layout_mode = 1
+theme_override_constants/separation = 12

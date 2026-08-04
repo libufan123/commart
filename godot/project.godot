@@ -1,0 +1,36 @@
+; Engine configuration file.
+; Godot 4.3 · 竖屏移动端（基准 1080×1920，9:16，仅竖屏）
+; 键名严格对齐 docs/architecture/engin-architecture.md §5.1 与 ADR-003。
+config_version=5
+
+[application]
+
+config/name="沟通的艺术 · 沟通技能学习游戏"
+config/version="0.1.0"
+run/main_scene="res://scenes/play/MainMenu.tscn"
+config/features=PackedStringArray("4.3", "GL Compatibility")
+
+[display]
+
+window/size/viewport_width=1080
+window/size/viewport_height=1920
+window/handheld/orientation="portrait"
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
+[gui]
+
+; B1/B2（红）：把 portrait_theme 设为工程默认主题，使全 Label/Button 继承 CJK 默认字体。
+; 字体二进制（NotoSansSC-Regular.ttf）缺失时 Godot 回退默认字体，不崩溃；放入即生效。
+default_theme="res://scripts/theme/portrait_theme.tres"
+
+[autoload]
+
+; E1-S1：唯一数据入口（ADR-001 / A10）。
+DataLoader="*res://scripts/autoload/DataLoader.gd"
+; E4-S4：轻量存档（白名单写入，关 E2/E4 红项）。RunState 本切片仍不注册（PlaySession 本地持有内存态）。
+SaveManager="*res://scripts/autoload/SaveManager.gd"
+
+; [editor_plugins]
+; GUT 由用户自行 vendor 到 res://addons/gut/ 后在编辑器启用（见 README_Sprint1.md）。
+; 启用后本段会写入 enabled=PackedStringArray("gut")；此处不预置以免缺插件时无法打开工程。

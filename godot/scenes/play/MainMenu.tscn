@@ -1,0 +1,46 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/MainMenu.gd" id="1_mm"]
+
+[node name="MainMenu" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_mm")
+
+[node name="RootMargin" type="MarginContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/margin_left = 24
+theme_override_constants/margin_top = 24
+theme_override_constants/margin_right = 24
+theme_override_constants/margin_bottom = 24
+
+[node name="VBox" type="VBoxContainer" parent="RootMargin"]
+layout_mode = 1
+theme_override_constants/separation = 24
+
+[node name="TitleLabel" type="Label" parent="RootMargin/VBox"]
+layout_mode = 1
+text = "沟通的艺术"
+
+[node name="SubtitleLabel" type="Label" parent="RootMargin/VBox"]
+layout_mode = 1
+text = "情景抉择 · 沟通技能学习"
+
+[node name="StartButton" type="Button" parent="RootMargin/VBox"]
+layout_mode = 1
+custom_minimum_size = Vector2(0, 56)
+text = "开始学习"
+
+[node name="ContinueButton" type="Button" parent="RootMargin/VBox"]
+layout_mode = 1
+custom_minimum_size = Vector2(0, 56)
+text = "继续"

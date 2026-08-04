@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "1",
+  "id": "s04_force_boundary",
+  "skill": "s04-genuine-praise-standard",
+  "title": "校验样本：forceBoundary=true（边界强制）",
+  "context": "情境背景（占位，仅用于校验器单测）。",
+  "npc": { "name": "同事", "role": "同事", "mood": "awaiting", "line": "（对方刚犯了一个严重错误，但你本想夸他。）" },
+  "impulse": "我想先夸他，缓和气氛。",
+  "forceBoundary": true,
+  "triggers": {
+    "candidates": ["严重错误须先叫停", "先夸再说", "纯事务沟通", "对方在撒谎"],
+    "correct": "严重错误须先叫停"
+  },
+  "choices": [
+    {
+      "id": "c1",
+      "type": "skilled",
+      "text": "先肯定他做对的部分，再指出错误。",
+      "consequence": { "npcReaction": "r", "relationshipSignal": 1, "judgement": "j" }
+    },
+    {
+      "id": "c2",
+      "type": "trap",
+      "text": "先夸他，假装没看到错误。",
+      "consequence": { "npcReaction": "r", "relationshipSignal": -1, "judgement": "j" }
+    },
+    {
+      "id": "c3",
+      "type": "boundary",
+      "text": "涉及严重错误，必须如实指出、叫停，不假夸。",
+      "consequence": { "npcReaction": "（被要求书面说明情况）", "relationshipSignal": 0, "judgement": "安全 / 合规红线不在本技能范围，必须叫停而非绕开——真诚赞赏让位于「叫停」。" }
+    }
+  ],
+  "review": {
+    "mechanism": "m（精确夸 vs 假夸，占位）",
+    "case": "c（真实案例，占位）",
+    "migration": "g（迁移线索，占位）"
+  }
+}

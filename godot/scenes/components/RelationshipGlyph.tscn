@@ -1,0 +1,12 @@
+[gd_scene load_steps=1 format=3]
+
+[node name="RelationshipGlyph" type="HBoxContainer"]
+layout_mode = 1
+
+[node name="SymbolLabel" type="Label" parent="."]
+layout_mode = 1
+text = "0"
+
+[node name="TextLabel" type="Label" parent="."]
+layout_mode = 1
+text = "关系平稳"

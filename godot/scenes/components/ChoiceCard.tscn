@@ -1,0 +1,8 @@
+[gd_scene load_steps=1 format=3]
+
+[node name="ChoiceCard" type="Button"]
+layout_mode = 1
+custom_minimum_size = Vector2(0, 96)
+text = "⬡"
+alignment = 0
+autowrap_mode = 2
