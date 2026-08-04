@@ -1,0 +1,76 @@
+name: Build Android (APK)
+
+# 用途：push / PR / 手动触发时，用 GitHub Actions 自动导出 Android APK 制品。
+# 产出：debug 签名 APK（Godot 自带 debug keystore），可直接下载侧载真机测试。
+# 说明：本工作流依赖 barichello/godot-ci@6 —— 该镜像内置 Godot 4.3 + 官方导出模板
+#       + Android SDK + debug keystore，故 --export 即产出可侧载的 debug APK，无需本地 SDK。
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:        # 允许在 Actions 页手动触发
+
+jobs:
+  build-android:
+    name: Export Godot Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Godot CI — export Android (debug)
+        uses: barichello/godot-ci@6
+        with:
+          godot_version: 4.3.0
+          preset: Android
+          project_dir: godot
+          export_path: commart.apk
+        # godot-ci 内部等价于：
+        #   godot --headless --path godot --export "Android" commart.apk
+        # 导出模板与 Android SDK 由镜像提供；package/signed=false → debug 签名。
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: commart-android
+          path: commart.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      # ============================================================================
+      # 上架 Google Play 用的 release 签名（默认关闭，仅作指引）
+      # ----------------------------------------------------------------------------
+      # 如需产出可上架的 release AAB / APK，取消下方注释，并在仓库
+      #   Settings → Secrets and variables → Actions → Secrets 中配置：
+      #     PLAY_KEYSTORE_BASE64  : release keystore 的 base64（cat commart.keystore | base64 -w0）
+      #     KEYSTORE_PASSWORD     : keystore 密码
+      #     KEYSTORE_ALIAS        : 密钥别名（如 commart）
+      #     KEYSTORE_KEY_PASSWORD : 私钥密码（若与 keystore 密码不同）
+      # 同时把 godot/export_presets.cfg 的 package/signed 改为 true，
+      # 并填 keystore/release / keystore/release_user / keystore/release_password 指向注入文件。
+      #
+      # - name: Decode release keystore
+      #   run: echo "${{ secrets.PLAY_KEYSTORE_BASE64 }}" | base64 -d > godot/commart.keystore
+      #
+      # - name: Point preset at release keystore
+      #   run: |
+      #     sed -i 's/^package\/signed=false/package\/signed=true/' godot/export_presets.cfg
+      #     # 并用 keystore/release="res://commart.keystore" 等选项指向该文件
+      #
+      # - name: Godot CI — export Android (release)
+      #   uses: barichello/godot-ci@6
+      #   with:
+      #     godot_version: 4.3.0
+      #     preset: Android
+      #     project_dir: godot
+      #     export_path: commart-release.aab
+      #
+      # - name: Upload release artifact
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: commart-android-release
+      #     path: commart-release.aab
+      #     if-no-files-found: error
+      # ============================================================================
