@@ -529,10 +529,136 @@ jobs:
           exit 0
 
       # ======================================================================
+      # ★ 步骤11B（第三轮新增：E7-S4）· 导出前硬自检
+      # 步骤11 的预导入是非阻塞的（set +e / exit 0）；若其静默失败，导出会在步骤12
+      # 才暴露。本步在导出前做硬校验：Godot 能否正常打开工程、关键文件是否齐全、
+      # zipalign 是否就位（之前只校验了 apksigner，漏了 zipalign）。
+      # 任何一项不满足 → 在此步就失败，打印明确诊断。
+      - name: "步骤11B · 导出前自检（硬校验，失败即停）"
+        run: |
+          set -euo pipefail
+          echo ">>> 诊断锚点 F3 · 导出前自检"
+
+          # ---- A. 关键工程文件存在性 ----
+          echo "[自检 A] 关键工程文件"
+          for F in \
+            "$GITHUB_WORKSPACE/$PROJECT_DIR/project.godot" \
+            "$GITHUB_WORKSPACE/$PROJECT_DIR/export_presets.cfg" \
+            ; do
+            if [ -f "$F" ]; then
+              echo "  ✅ $F"
+            else
+              echo "  ❌ 缺失: $F"
+              MISSING=1
+            fi
+          done
+          echo "[自检 A] data/ 目录"
+          if [ -d "$GITHUB_WORKSPACE/$PROJECT_DIR/data" ]; then
+            echo "  ✅ data/ 存在"; ls -la "$GITHUB_WORKSPACE/$PROJECT_DIR/data"
+            echo "  JSON 场景文件数:"
+            find "$GITHUB_WORKSPACE/$PROJECT_DIR/data" -name "*.json" | wc -l
+          else
+            echo "  ❌ data/ 目录缺失 —— APK 出包后也会无数据！"
+            MISSING=1
+          fi
+          if [ "${MISSING:-0}" -ne 0 ]; then
+            echo "::error::关键工程文件缺失，无法继续导出"
+            exit 1
+          fi
+
+          # ---- B. Godot 能否正常打开工程（硬校验 --editor --quit 退出码）----
+          echo "[自检 B] godot --headless --editor --quit（硬校验，不再吞错误）"
+          B_LOG="$RUNNER_TEMP/preflight_editor.log"
+          cd "$GITHUB_WORKSPACE/$PROJECT_DIR"
+          set +e
+          timeout 900 "$GODOT_BIN" --headless --editor --quit > "$B_LOG" 2>&1
+          B_RC=$?
+          set -e
+          echo "  退出码 = $B_RC"
+          if [ "$B_RC" -ne 0 ]; then
+            echo ">>> 诊断锚点 F3-B · --editor --quit 失败（退出码 $B_RC）"
+            echo "----- Godot 输出最后 60 行 -----"
+            tail -n 60 "$B_LOG" || true
+            echo "----- Godot 输出中的错误行 -----"
+            grep -inE "ERROR|SCRIPT ERROR|Parse Error|找不到|not found|Failed|cannot|missing|invalid" \
+              "$B_LOG" | tail -40 || echo "(未匹配)"
+            echo "::error::Godot 无法正常打开工程（退出码 $B_RC），导出必然失败。请从上方日志定位。"
+            exit 1
+          fi
+          echo "  ✅ --editor --quit 正常退出"
+          # 检查是否生成了 .godot/ 导入缓存
+          if [ -d ".godot" ]; then
+            echo "  ✅ .godot/ 导入缓存已生成"
+            ls -la .godot 2>/dev/null | head -5
+          else
+            echo "  ⚠️ .godot/ 未生成（可能影响后续导出，但不阻塞）"
+          fi
+
+          # ---- C. zipalign 存在性（之前只校验了 apksigner，漏了 zipalign）----
+          echo "[自检 C] zipalign（android_debug.apk 对齐工具，导出必需）"
+          ZIPALIGN="$(find "${ANDROID_SDK_DIR:-/nonexistent}/build-tools" -name zipalign -print 2>/dev/null | sort | tail -1 || true)"
+          if [ -n "$ZIPALIGN" ] && [ -x "$ZIPALIGN" ]; then
+            echo "  ✅ zipalign = $ZIPALIGN"
+          else
+            echo ">>> 诊断锚点 F3-C · zipalign 缺失"
+            echo "--- build-tools 目录树 ---"
+            find "${ANDROID_SDK_DIR:-}/build-tools" -maxdepth 3 2>/dev/null | head -40 || echo "(build-tools 不可读)"
+            echo "--- apksigner 按版本列出 ---"
+            find "${ANDROID_SDK_DIR:-}/build-tools" -name apksigner 2>/dev/null | head -10 || true
+            echo "--- zipalign 按版本列出 ---"
+            find "${ANDROID_SDK_DIR:-}/build-tools" -name zipalign 2>/dev/null | head -10 || true
+            echo "::error::zipalign 缺失：Godot 4.3 导出 Android APK 需要 BOTH apksigner AND zipalign。"
+            echo "若 runner 的 build-tools 只含 apksigner 不含 zipalign，"
+            echo "可尝试：sdkmanager \"build-tools;34.0.0\"（安装完整 build-tools）。"
+            exit 1
+          fi
+
+          # ---- D. 编辑器设置回显（确认 SDK/JDK/keystore 路径已写入）----
+          echo "[自检 D] Godot 编辑器设置内容"
+          cat "$HOME/.config/godot/editor_settings-${GODOT_MINOR}.tres" 2>/dev/null \
+            || echo "  ❌ 编辑器设置文件不存在（$HOME/.config/godot/editor_settings-${GODOT_MINOR}.tres）"
+          echo ""
+
+          # ---- E. 预设名匹配检查（--export-debug 用的名字必须在 export_presets.cfg 里有）----
+          echo "[自检 E] 导出预设 '$PRESET_NAME' 在 export_presets.cfg 中是否存在"
+          if grep -q "name=\"$PRESET_NAME\"" "$GITHUB_WORKSPACE/$PROJECT_DIR/export_presets.cfg" 2>/dev/null; then
+            echo "  ✅ 预设 '$PRESET_NAME' 已找到"
+          else
+            echo "  ❌ 预设 '$PRESET_NAME' 未找到！export_presets.cfg 中的预设名为："
+            grep '^name=' "$GITHUB_WORKSPACE/$PROJECT_DIR/export_presets.cfg" 2>/dev/null || echo "(无法读取)"
+            echo "::error::预设名不匹配，--export-debug 会报 'No export preset found'"
+            exit 1
+          fi
+          echo "✅ 导出前自检全部通过。"
+          {
+            echo "ZIPALIGN_BIN=$ZIPALIGN"
+          } >> "$GITHUB_ENV"
+
+      # ======================================================================
       - name: "步骤12 · 导出 Android APK（debug）"
         run: |
           set -uo pipefail
           echo ">>> 诊断锚点 G · 导出"
+
+          # ---- 导出前环境打印（E7-S4 新增：帮用户确认一切就绪）----
+          echo "========== 导出前环境确认 =========="
+          echo "[G-ENV] Godot 版本"
+          "$GODOT_BIN" --headless --version 2>&1 || echo "(无法获取版本)"
+          echo ""
+          echo "[G-ENV] GODOT_ANDROID_* 环境变量"
+          env | grep -E '^GODOT_ANDROID_' || echo "(无 GODOT_ANDROID_* 环境变量)"
+          echo ""
+          echo "[G-ENV] build-tools 目录（确认 apksigner / zipalign 都具备）"
+          ls -la "${ANDROID_SDK_DIR:-${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}}/build-tools/" 2>/dev/null \
+            || echo "(build-tools 不可列)"
+          for BT in $(ls -1 "${ANDROID_SDK_DIR:-${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}}/build-tools/" 2>/dev/null || true); do
+            echo "  build-tools/$BT/: apksigner=$(test -f "${ANDROID_SDK_DIR:-}/build-tools/$BT/apksigner" && echo 'YES' || echo 'NO')  zipalign=$(test -f "${ANDROID_SDK_DIR:-}/build-tools/$BT/zipalign" && echo 'YES' || echo 'NO')"
+          done
+          echo ""
+          echo "[G-ENV] keystore"
+          ls -la "${KEYSTORE_PATH:-/nonexistent}" 2>/dev/null || echo "(keystore 不存在)"
+          echo "====================================="
+
           # 导入步骤可能覆盖编辑器设置，导出前再确认一次
           "$RUNNER_TEMP/gen_editor_settings.sh"
 
@@ -550,12 +676,30 @@ jobs:
           echo ">>> 诊断锚点 G1 · 导出命令退出码 = $RC"
           if [ "$RC" -ne 0 ] || [ ! -f "$GITHUB_WORKSPACE/$OUT_APK" ]; then
             echo ">>> 诊断锚点 G2 · 导出失败现场"
-            echo "----- 已知错误关键词命中情况 -----"
-            grep -inE "could not find keystore|export template|no export preset|preset .* not found|apksigner|zipalign|non-existent resource|Failed to export|Unknown command|error at|SCRIPT ERROR" \
-              "$LOG" | tail -40 || echo "(未命中已知关键词，请看上方完整日志)"
-            echo "----- 输出目录 -----"
+            echo "========== 关键错误行提取（E7-S4 增强）=========="
+            # 第一轮：高置信度关键词（Android 导出专用 + 通用错误）
+            echo "--- [高置信度] Android 导出专用 ---"
+            grep -inE "could not find keystore|export template.*not found|no export preset|apksigner|zipalign|build-tools|android sdk|keytool|signing failed" \
+              "$LOG" | tail -40 || echo "(未命中)"
+            echo "--- [高置信度] 资源 / 脚本错误 ---"
+            grep -inE "non-existent resource|SCRIPT ERROR|Parse Error|Can't open|Failed to load|MissingResource|ExtResource" \
+              "$LOG" | tail -40 || echo "(未命中)"
+            echo "--- [中置信度] 路径 / 文件 / 权限 ---"
+            grep -inE "cannot find|could not find|no such file|permission denied|Can't write|Failed to create" \
+              "$LOG" | tail -40 || echo "(未命中)"
+            echo "--- [中置信度] Godot 内部错误 ---"
+            grep -inE "ERROR:|Failed to export|editor_export|platform export|Exporting:|ERROR:" \
+              "$LOG" | tail -40 || echo "(未命中)"
+            echo "--- [低置信度] 所有 error/fail 行 ---"
+            grep -inE "error|fail|cannot|missing|invalid|unable" \
+              "$LOG" | tail -60 || echo "(未命中)"
+            echo "========== 导出日志最后 80 行 =========="
+            tail -n 80 "$LOG"
+            echo "========== 输出目录 =========="
             ls -laR "$GITHUB_WORKSPACE/$OUT_DIR" 2>/dev/null || true
-            echo "::error::Godot 导出失败（退出码 $RC）"
+            echo "========== 按时间倒序的最近修改文件（看 Godot 最后碰了哪个文件）=========="
+            find "$GITHUB_WORKSPACE/$PROJECT_DIR" -newer "$LOG" -type f 2>/dev/null | head -20 || true
+            echo "::error::Godot 导出失败（退出码 $RC）。请把上面「关键错误行提取」区块复制回传。"
             exit 1
           fi
           echo "✅ 导出命令完成。"
