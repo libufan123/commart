@@ -1,23 +1,29 @@
 name: Build Android (APK)
 
 # ============================================================================
-# 用途：push / PR / 手动触发时，用 GitHub Actions 导出可侧载安装的 debug APK。
+# 第二轮修复（Task E7-S3）· 去容器化重写
 # ----------------------------------------------------------------------------
-# 关键：barichello/godot-ci 是 **Docker 镜像**（Docker Hub: barichello/godot-ci:4.3），
-#       不是 GitHub Action。必须用 `container:` 引用，导出步骤自己手写。
-#       旧写法 `uses: barichello/godot-ci@6` 会在解析阶段直接失败（仓库/Action 不存在）。
+# 上一版用 `container: image: barichello/godot-ci:4.3`，失败原因无法定位，因为
+# 整条链路建立在「镜像内部长什么样」的 5 条未验证假设上（模板路径 / 编辑器设置
+# 命名 / SDK 路径 / 有没有 wget / gradle 可不可用）。
 #
-# 镜像内已有（依据其官方 Dockerfile，2026-08 核实）：
-#   Godot 4.3            → /usr/local/bin/godot
-#   导出模板             → /root/.local/share/godot/export_templates/4.3.stable/
-#   编辑器设置(含SDK路径) → /root/.config/godot/editor_settings-4.3.tres
-#   debug keystore       → /root/debug.keystore（alias androiddebugkey / 口令 android）
-#   Android SDK          → $ANDROID_HOME=/usr/lib/android-sdk（含 build-tools 33.0.2）
-#   JDK 17               → openjdk-17-jdk-headless
-# 注意：容器 job 的 $HOME 是 /github/home 而非 /root，所以上面这些都要"搬过来"。
+# 本版**不使用任何容器**：runs-on: ubuntu-latest 裸机，Godot 引擎与导出模板
+# 由工作流自己下载、自己放到自己指定的路径。所有路径都是我们写进去的，
+# 不再有"猜"的成分。
 #
-# 步骤编号与本工作流步骤名一一对应。若构建失败，把红色 ❌ 的那一步展开，
-# 复制最后 30 行日志回传即可定位（见 production/CI_修复说明.md）。
+# 依赖的 ubuntu-latest 既有事实（GitHub 官方 runner 镜像自带，无需安装）：
+#   · JDK 17          → $JAVA_HOME_17_X64
+#   · Android SDK     → $ANDROID_SDK_ROOT / $ANDROID_HOME
+#                       （含 build-tools/*/apksigner、zipalign）
+#   · curl / wget / unzip / keytool / sudo 均可用，且可访问外网
+#
+# 导出方式：gradle_build/use_gradle_build = false
+#           → 使用官方预编译模板 android_debug.apk，只需 apksigner + JDK，
+#             不引入完整 gradle 构建（那是另一个巨大的失败面）。
+#
+# ★ 若失败：不用自己找是哪一步红了，直接展开**最后一步**
+#   「步骤15 · 失败诊断汇总」，把整段复制回传即可。
+#   日志里形如 `>>> 诊断锚点 X` 的行是给排查用的定位标记。
 # ============================================================================
 
 on:
@@ -31,107 +37,336 @@ permissions:
   contents: read
 
 env:
-  PROJECT_DIR: godot                                  # Godot 工程所在子目录
-  PRESET_NAME: Android                                # 必须与 export_presets.cfg 的 name= 完全一致
+  # ---- Godot 版本（改版本时这三个要一起改）----
+  GODOT_RELEASE: "4.3-stable"       # GitHub Release 的 tag
+  GODOT_TEMPLATE_DIR: "4.3.stable"  # 模板安装目录名（兜底值，实际以 tpz 内 version.txt 为准）
+  # ---- 工程 ----
+  PROJECT_DIR: godot                            # Godot 工程所在子目录
+  PRESET_NAME: Android                          # 必须与 export_presets.cfg 的 name= 完全一致
   OUT_DIR: build/android
   OUT_APK: build/android/commart.apk
   FONT_PATH: godot/assets/fonts/NotoSansSC-Regular.ttf
   THEME_PATH: godot/scripts/theme/portrait_theme.tres
 
+defaults:
+  run:
+    shell: bash     # 固定为 bash -eo pipefail，行为可预测
+
 jobs:
   build-android:
     name: Export Godot Android APK (debug)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    container:
-      image: barichello/godot-ci:4.3
+    timeout-minutes: 60      # 需下载约 1GB 导出模板，给足余量
 
     steps:
-      # ----------------------------------------------------------------------
+      # ======================================================================
       - name: "步骤1 · 检出仓库"
+        # 【主理人风险处置 · E7-S3】此处刻意保留 @v4，不升 @v5。
+        # 理由：用户上一次运行的日志里出现的 "Node.js 20 is deprecated ...
+        # actions/checkout@v4" 属于**弃用警告**（黄色感叹号），GitHub 会自动把它
+        # 放在 Node 24 上执行，功能完全不受影响 —— 这条警告反而证明了 @v4 在该
+        # 仓库能正常解析并运行。而若 @v5 尚未发布/标签不存在，工作流会在解析阶段
+        # 直接失败，整轮白跑。已失败两次，不再赌任何"可能不存在"的引用。
+        # 警告无害，缺失致命 → 取 @v4。
         uses: actions/checkout@v4
+        # v5 使用 node24，消除 "Node.js 20 is deprecated" 警告。
+        # 若极端情况下 v5 无法解析，把这行改回 @v4 即可（警告无害，不影响构建）。
 
-      # ----------------------------------------------------------------------
-      # 环境自检：把关键路径全部打印出来。此步永不失败，只负责"留证据"。
-      - name: "步骤2 · 环境自检（只打印，不会失败）"
+      # ======================================================================
+      # 只打印、不判断。此步用 `set +e`，**永远不会失败**，只负责留下现场证据。
+      - name: "步骤2 · 环境自检（只打印，永不失败）"
         run: |
-          echo "----- whoami / HOME -----"
-          whoami || true
-          echo "HOME=$HOME"
-          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
-          echo "----- godot -----"
-          godot --version || true
-          echo "----- java -----"
-          java -version 2>&1 || true
-          echo "JAVA_HOME=$JAVA_HOME"
-          echo "----- android sdk -----"
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          ls -1 "${ANDROID_HOME:-/usr/lib/android-sdk}/build-tools" 2>/dev/null || echo "(无 build-tools 目录)"
-          echo "----- 镜像自带的导出模板 -----"
-          ls -la /root/.local/share/godot/export_templates/ 2>/dev/null || echo "(无)"
-          echo "----- 镜像自带的编辑器设置 -----"
-          ls -la /root/.config/godot/ 2>/dev/null || echo "(无)"
-          echo "----- 工程文件 -----"
-          ls -la "$PROJECT_DIR" || true
+          set +e
+          echo ">>> 诊断锚点 A · runner 环境事实"
+          echo "----- 基本信息 -----"
+          echo "whoami   = $(whoami)"
+          echo "HOME     = $HOME"
+          echo "WORKSPACE= $GITHUB_WORKSPACE"
+          echo "RUNNER_TEMP=$RUNNER_TEMP"
+          echo "OS       = $(lsb_release -ds 2>/dev/null || cat /etc/os-release | head -2)"
+          echo "磁盘剩余 :"; df -h / | tail -1
 
-      # ----------------------------------------------------------------------
-      # CJK 字体：runner 可访问外网，仓库里没有字体二进制就在这里抓。
+          echo "----- Java -----"
+          echo "JAVA_HOME        = ${JAVA_HOME:-(未设置)}"
+          echo "JAVA_HOME_17_X64 = ${JAVA_HOME_17_X64:-(未设置)}"
+          java -version 2>&1 | head -3
+          command -v keytool || echo "(keytool 不在 PATH)"
+
+          echo "----- Android SDK -----"
+          echo "ANDROID_HOME     = ${ANDROID_HOME:-(未设置)}"
+          echo "ANDROID_SDK_ROOT = ${ANDROID_SDK_ROOT:-(未设置)}"
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          if [ -n "$SDK" ] && [ -d "$SDK" ]; then
+            echo "SDK 顶层目录:"; ls -1 "$SDK"
+            echo "build-tools 版本:"; ls -1 "$SDK/build-tools" 2>/dev/null || echo "(无 build-tools)"
+            echo "apksigner:"; find "$SDK/build-tools" -name apksigner -print 2>/dev/null | tail -3
+            echo "zipalign :"; find "$SDK/build-tools" -name zipalign  -print 2>/dev/null | tail -3
+          else
+            echo "::warning::未检测到 Android SDK（步骤10 会再校验一次）"
+          fi
+
+          echo "----- 下载工具 -----"
+          command -v curl  || echo "(无 curl)"
+          command -v wget  || echo "(无 wget)"
+          command -v unzip || echo "(无 unzip)"
+
+          echo "----- 工程文件 -----"
+          ls -la "$PROJECT_DIR"
+          echo "export_presets.cfg 关键项:"
+          grep -nE 'name=|package/signed|use_gradle_build|include_filter|exclude_filter' \
+            "$PROJECT_DIR/export_presets.cfg" 2>/dev/null
+          exit 0
+
+      # ======================================================================
+      # 通用下载器：多源 fallback（每个源先 curl 后 wget）+ 体积下限校验，
+      # 用于挡住"拿到 HTML 错误页 / 半截文件"这类静默失败。
+      - name: "步骤3 · 准备通用下载器（多源 + 完整性校验）"
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/dl.sh" <<'DLEOF'
+          #!/usr/bin/env bash
+          # 用法：dl.sh <输出路径> <最小字节数> <URL1> [URL2 ...]
+          set -u
+          OUT="$1"; shift
+          MIN="$1"; shift
+          for U in "$@"; do
+            for TOOL in curl wget; do
+              command -v "$TOOL" >/dev/null 2>&1 || continue
+              echo "    ↳ [$TOOL] $U"
+              rm -f "$OUT"
+              if [ "$TOOL" = "curl" ]; then
+                curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 \
+                     --max-time 1200 -o "$OUT" "$U" || { echo "      下载失败"; continue; }
+              else
+                wget -q --tries=3 --timeout=120 -O "$OUT" "$U" \
+                     || { echo "      下载失败"; continue; }
+              fi
+              SZ=$(stat -c%s "$OUT" 2>/dev/null || echo 0)
+              if [ "$SZ" -lt "$MIN" ]; then
+                echo "      体积异常：${SZ}B < 下限 ${MIN}B（多半是 HTML 错误页），换下一个源"
+                continue
+              fi
+              echo "      ✅ 成功：${SZ} 字节"
+              exit 0
+            done
+          done
+          echo "    ✗ 所有源均失败"
+          exit 1
+          DLEOF
+          chmod +x "$RUNNER_TEMP/dl.sh"
+          echo "下载器就位：$RUNNER_TEMP/dl.sh"
+
+      # ======================================================================
+      - name: "步骤4 · 下载并安装 Godot 4.3 引擎"
+        run: |
+          set -euo pipefail
+          ZIP="$RUNNER_TEMP/godot.zip"
+          echo ">>> 诊断锚点 B · 安装 Godot 引擎"
+          if ! "$RUNNER_TEMP/dl.sh" "$ZIP" 20000000 \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_RELEASE}/Godot_v${GODOT_RELEASE}_linux.x86_64.zip" \
+            "https://github.com/godotengine/godot-builds/releases/download/${GODOT_RELEASE}/Godot_v${GODOT_RELEASE}_linux.x86_64.zip" ; then
+            echo ">>> 诊断锚点 B0 · Godot 引擎下载失败（全部源不可达）"
+            echo "请确认 tag ${GODOT_RELEASE} 与文件名 Godot_v${GODOT_RELEASE}_linux.x86_64.zip 是否存在。"
+            echo "::error::无法下载 Godot 引擎"
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/godot-bin"
+          if ! unzip -o -q "$ZIP" -d "$RUNNER_TEMP/godot-bin"; then
+            echo ">>> 诊断锚点 B1 · 引擎压缩包解压失败（文件损坏或不是 zip）"
+            ls -la "$ZIP"; file "$ZIP" 2>/dev/null || true
+            head -c 200 "$ZIP" | od -c | head -5 || true
+            echo "::error::Godot 引擎压缩包无法解压"
+            exit 1
+          fi
+
+          BIN="$(find "$RUNNER_TEMP/godot-bin" -maxdepth 2 -type f -name 'Godot_v*_linux.x86_64' -print -quit)"
+          if [ -z "$BIN" ]; then
+            echo ">>> 诊断锚点 B2 · 解压后找不到引擎可执行文件，实际内容："
+            find "$RUNNER_TEMP/godot-bin" -maxdepth 2 || true
+            echo "::error::Godot 引擎可执行文件缺失"
+            exit 1
+          fi
+          GODOT_BIN="$RUNNER_TEMP/godot-bin/godot"
+          mv -f "$BIN" "$GODOT_BIN"
+          chmod +x "$GODOT_BIN"
+
+          # 首次启动验证；失败则补装常见共享库后重试（裸 runner 上偶尔缺图形/字体库）
+          if ! "$GODOT_BIN" --headless --version; then
+            echo ">>> 诊断锚点 B3 · Godot 首次启动失败，尝试补装共享库后重试"
+            ldd "$GODOT_BIN" 2>/dev/null | grep -i "not found" || true
+            sudo apt-get update -y >/dev/null 2>&1 || true
+            sudo apt-get install -y --no-install-recommends \
+              libfontconfig1 libfreetype6 libgl1 libx11-6 libxcursor1 \
+              libxinerama1 libxi6 libxrandr2 libasound2t64 >/dev/null 2>&1 \
+            || sudo apt-get install -y --no-install-recommends \
+              libfontconfig1 libfreetype6 libgl1 libx11-6 libxcursor1 \
+              libxinerama1 libxi6 libxrandr2 >/dev/null 2>&1 || true
+          fi
+          if ! "$GODOT_BIN" --headless --version; then
+            echo ">>> 诊断锚点 B4 · Godot 仍无法启动，缺失的动态库如下："
+            ldd "$GODOT_BIN" 2>/dev/null | grep -i "not found" || echo "(ldd 无 not found，可能是别的原因)"
+            echo "::error::Godot 引擎无法在本 runner 上启动"
+            exit 1
+          fi
+
+          GV="$("$GODOT_BIN" --version 2>/dev/null || true)"
+          GV="${GV%%$'\n'*}"
+          GMINOR="$(printf '%s' "$GV" | cut -d. -f1,2)"
+          [ -n "$GMINOR" ] || GMINOR="4.3"
+          if [ "$GMINOR" != "4.3" ]; then
+            echo "::warning::检测到 Godot 版本 '$GV'，与预期 4.3 不一致"
+          fi
+
+          {
+            echo "GODOT_BIN=$GODOT_BIN"
+            echo "GODOT_MINOR=$GMINOR"
+          } >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/godot-bin" >> "$GITHUB_PATH"
+          echo "✅ Godot 就位：$GODOT_BIN"
+          echo "   版本串：$GV   （主次版本 $GMINOR）"
+
+      # ======================================================================
+      - name: "步骤5 · 下载并安装 Android 导出模板"
+        run: |
+          set -euo pipefail
+          TPZ="$RUNNER_TEMP/templates.tpz"
+          echo ">>> 诊断锚点 C · 安装导出模板"
+          # .tpz 本质就是 zip，解压后得到 templates/ 目录
+          if ! "$RUNNER_TEMP/dl.sh" "$TPZ" 50000000 \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_RELEASE}/Godot_v${GODOT_RELEASE}_export_templates.tpz" \
+            "https://github.com/godotengine/godot-builds/releases/download/${GODOT_RELEASE}/Godot_v${GODOT_RELEASE}_export_templates.tpz" ; then
+            echo ">>> 诊断锚点 C0 · 导出模板下载失败（全部源不可达）"
+            echo "请确认文件名 Godot_v${GODOT_RELEASE}_export_templates.tpz 是否存在。"
+            echo "::error::无法下载 Android 导出模板"
+            exit 1
+          fi
+
+          rm -rf "$RUNNER_TEMP/tpz"; mkdir -p "$RUNNER_TEMP/tpz"
+          if ! unzip -o -q "$TPZ" -d "$RUNNER_TEMP/tpz"; then
+            echo ">>> 诊断锚点 C1 · 模板包解压失败（文件损坏或不是 zip）"
+            ls -la "$TPZ"; file "$TPZ" 2>/dev/null || true
+            head -c 200 "$TPZ" | od -c | head -5 || true
+            echo "::error::导出模板压缩包无法解压"
+            exit 1
+          fi
+
+          SRC="$RUNNER_TEMP/tpz/templates"
+          if [ ! -d "$SRC" ]; then
+            echo ">>> 诊断锚点 C2 · 解压后未见 templates/ 目录，实际结构："
+            find "$RUNNER_TEMP/tpz" -maxdepth 2 | head -50 || true
+            # 自愈：直接按 android_debug.apk 反查所在目录
+            HIT="$(find "$RUNNER_TEMP/tpz" -name android_debug.apk -print -quit || true)"
+            if [ -n "$HIT" ]; then
+              SRC="$(dirname "$HIT")"
+              echo "已自动定位模板目录：$SRC"
+            else
+              echo "::error::模板包内找不到 android_debug.apk"
+              exit 1
+            fi
+          fi
+
+          # 目录名必须与引擎版本严格匹配，优先采用模板包自带的 version.txt
+          if [ -s "$SRC/version.txt" ]; then
+            TDIR="$(tr -d ' \r\n' < "$SRC/version.txt")"
+            echo "模板包自报版本：$TDIR"
+          else
+            TDIR="$GODOT_TEMPLATE_DIR"
+            echo "模板包无 version.txt，使用兜底目录名：$TDIR"
+          fi
+
+          DST="$HOME/.local/share/godot/export_templates/$TDIR"
+          rm -rf "$DST"; mkdir -p "$DST"
+          cp -a "$SRC"/. "$DST"/
+
+          # 硬校验：先打印现场，再失败
+          if [ ! -f "$DST/android_debug.apk" ]; then
+            echo ">>> 诊断锚点 C3 · 模板未就位（失败现场）"
+            echo "期望文件：$DST/android_debug.apk"
+            echo "--- 该目录实际内容 ---"; ls -la "$DST" 2>/dev/null || echo "(目录不存在)"
+            echo "--- 模板根目录树 ---"
+            find "$HOME/.local/share/godot/export_templates" -maxdepth 3 | head -40 || true
+            echo "::error::Android 导出模板 android_debug.apk 未就位"
+            exit 1
+          fi
+
+          echo "TEMPLATE_DST=$DST" >> "$GITHUB_ENV"
+          echo "✅ 模板就位：$DST"
+          ls -la "$DST"/android_*.apk "$DST"/version.txt 2>/dev/null || true
+
+      # ======================================================================
+      # 中文字体：仓库里只有说明文档，没有字体二进制。runner 有外网，在这里抓。
       # continue-on-error: true —— 下载失败绝不阻塞出包（中文变方块可接受，出不了包不可接受）。
-      - name: "步骤3 · 获取中文字体 Noto Sans SC（失败不阻塞）"
+      - name: "步骤6 · 获取中文字体 Noto Sans SC（失败不阻塞）"
         continue-on-error: true
         run: |
           set -u
+          echo ">>> 诊断锚点 D · 中文字体"
           mkdir -p "$(dirname "$FONT_PATH")"
           if [ -s "$FONT_PATH" ]; then
-            echo "仓库内已有字体，跳过下载：$FONT_PATH"
-            exit 0
+            echo "仓库内已有字体，跳过下载：$FONT_PATH"; exit 0
           fi
-          # 多源 fallback。前两个是同一份 Google Fonts 可变字重 TTF 的不同网络路径，
-          # 第三个是 Noto CJK 官方 SubsetOTF（OTTO 头，Godot/FreeType 按内容识别，扩展名叫 .ttf 不影响）。
-          URLS="
-          https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf
-          https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf
-          https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf
-          https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@main/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf
-          "
+
           TMP="${FONT_PATH}.tmp"
-          for U in $URLS; do
-            echo "==> 尝试下载：$U"
-            rm -f "$TMP"
-            # 镜像内有 wget（没有 curl），故统一用 wget。
-            if wget -q --tries=3 --timeout=90 -O "$TMP" "$U"; then
+          try_font() {
+            U="$1"
+            for TOOL in curl wget; do
+              command -v "$TOOL" >/dev/null 2>&1 || continue
+              rm -f "$TMP"
+              if [ "$TOOL" = "curl" ]; then
+                curl -fsSL --retry 2 --connect-timeout 20 --max-time 300 -o "$TMP" "$U" || continue
+              else
+                wget -q --tries=2 --timeout=90 -O "$TMP" "$U" || continue
+              fi
               SZ=$(stat -c%s "$TMP" 2>/dev/null || echo 0)
-              # 字体魔数校验：00010000(TrueType) / true / OTTO(CFF) / ttcf(集合)
-              MAGIC=$(od -An -tx1 -N4 "$TMP" 2>/dev/null | tr -d ' \n')
-              echo "    大小=${SZ}B 魔数=${MAGIC}"
+              # 字体魔数：00010000(TrueType) / true / OTTO(CFF) / ttcf(集合)
+              MAGIC=$(od -An -tx1 -N4 "$TMP" 2>/dev/null | tr -d ' \n' || true)
+              echo "      [$TOOL] 大小=${SZ}B 魔数=${MAGIC}"
               case "$MAGIC" in
                 00010000|74727565|4f54544f|74746366)
-                  if [ "$SZ" -gt 1000000 ]; then
-                    mv "$TMP" "$FONT_PATH"
-                    echo "✅ 字体获取成功：$FONT_PATH (${SZ} 字节)"
-                    exit 0
-                  fi
-                  echo "    体积异常，换下一个源"
-                  ;;
-                *) echo "    非字体文件（魔数不匹配），换下一个源" ;;
+                  if [ "$SZ" -gt 500000 ]; then return 0; fi
+                  echo "      体积异常，换下一个" ;;
+                *) echo "      非字体文件，换下一个" ;;
               esac
-            else
-              echo "    下载失败，换下一个源"
+            done
+            return 1
+          }
+
+          for U in \
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf" \
+            "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf" \
+            "https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf" \
+            "https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@main/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf" ; do
+            echo "==> 源：$U"
+            if try_font "$U"; then
+              mv -f "$TMP" "$FONT_PATH"
+              echo "✅ 字体获取成功：$FONT_PATH"; exit 0
             fi
           done
+
+          # 最后兜底：用 Ubuntu 自带软件源装 Noto CJK（完全不依赖 GitHub / Google）
+          echo "==> 网络源全部失败，改用 apt 安装 fonts-noto-cjk"
+          sudo apt-get update -y >/dev/null 2>&1 || true
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk >/dev/null 2>&1 || true
+          CJK="$(find /usr/share/fonts -name 'NotoSansCJK*-Regular.ttc' -print -quit 2>/dev/null || true)"
+          if [ -n "$CJK" ]; then
+            cp -f "$CJK" "$FONT_PATH"
+            echo "✅ 已采用系统 Noto CJK：$CJK → $FONT_PATH"; exit 0
+          fi
+
           rm -f "$TMP"
-          echo "::warning::所有字体源均失败，本次出包将使用 Godot 默认字体（中文可能显示为方块）。"
+          echo "::warning::所有字体源均失败，本次出包将使用默认字体（中文可能是方块）。"
           exit 1
 
-      # ----------------------------------------------------------------------
-      # 字体缺失兜底：portrait_theme.tres 硬引用了字体文件，文件不在会产生
-      # "referenced non-existent resource" 的缺失依赖错误。没拿到字体就把主题降级成无字体版本，
-      # 保证导出链路上零缺失依赖。此步只在 CI 工作副本内改文件，不会回写仓库。
-      - name: "步骤4 · 字体缺失兜底（主题降级，保证不因缺资源中止）"
+      # ======================================================================
+      # portrait_theme.tres 硬引用了字体文件；文件不在会产生"缺失依赖"错误。
+      # 没拿到字体就把主题降级成无字体版本，保证导出链路零缺失依赖。
+      # 只改 CI 工作副本，不回写仓库。
+      - name: "步骤7 · 字体缺失兜底（主题降级）"
         run: |
           set -u
           if [ -s "$FONT_PATH" ]; then
-            echo "字体就位，主题保持原样（default_font 生效，中文正常）。"
+            echo "字体就位，主题保持原样。"
             ls -la "$FONT_PATH"
           else
             echo "::warning::字体缺失 → 将 $THEME_PATH 降级为无字体主题，避免缺失依赖导致导出报错。"
@@ -142,67 +377,48 @@ jobs:
             cat "$THEME_PATH"
           fi
 
-      # ----------------------------------------------------------------------
-      # 容器 job 的 $HOME=/github/home，Godot 只会在 $HOME 下找模板与编辑器设置，
-      # 所以必须把镜像放在 /root 下的两份东西复制过来（barichello 官方 README 的做法）。
-      - name: "步骤5 · 导出模板 + 编辑器设置就位"
+      # ======================================================================
+      # tests/*.gd 全部 `extends GutTest`，而 GUT 插件并未 vendor 进仓库。
+      # 这些脚本在导入阶段会刷出 8 条"找不到基类"解析错误，既污染日志、
+      # 又给排查制造噪音。它们本来就被 exclude_filter 排除、不进包，
+      # 因此在 CI 工作副本里直接移走（不回写仓库，本地开发不受影响）。
+      - name: "步骤8 · 移除 CI 不需要的测试脚本（降噪，非致命）"
         run: |
-          set -eu
-          GODOT_MINOR="$(godot --version 2>/dev/null | head -n1 | cut -d. -f1,2)"
-          echo "检测到 Godot 主次版本：${GODOT_MINOR}"
-
-          SRC_T="/root/.local/share/godot/export_templates"
-          DST_T="$HOME/.local/share/godot/export_templates"
-          mkdir -p "$DST_T"
-          if [ -d "$SRC_T" ] && [ "$SRC_T" != "$DST_T" ]; then
-            cp -a "$SRC_T"/. "$DST_T"/
+          set +e
+          T="$GITHUB_WORKSPACE/$PROJECT_DIR/tests"
+          if [ -d "$T" ]; then
+            echo "移除 CI 工作副本中的：$T"
+            rm -rf "$T" && echo "已移除。" || echo "移除失败（不影响后续，仅日志会多些解析错误）"
+          else
+            echo "无 tests 目录，跳过。"
           fi
-          echo "----- $DST_T -----"
-          ls -la "$DST_T" || true
-          # 硬校验：没有 android_debug.apk 模板就必定导不出包，早失败早定位。
-          if ! ls "$DST_T"/*/android_debug.apk >/dev/null 2>&1; then
-            echo "::error::找不到 Android 导出模板 android_debug.apk（期望在 $DST_T/<版本>.stable/ 下）。"
+          exit 0
+
+      # ======================================================================
+      # Godot headless 导出 Android 必须能拿到 debug keystore，
+      # 否则报 "Could not find keystore, unable to export"。
+      - name: "步骤9 · 生成 debug keystore 并注入环境变量"
+        run: |
+          set -euo pipefail
+          echo ">>> 诊断锚点 E · debug keystore"
+          JDK="${JAVA_HOME_17_X64:-${JAVA_HOME:-}}"
+          if [ -n "$JDK" ] && [ -x "$JDK/bin/keytool" ]; then
+            KT="$JDK/bin/keytool"
+          else
+            KT="$(command -v keytool || true)"
+          fi
+          if [ -z "$KT" ]; then
+            echo ">>> 诊断锚点 E1 · 找不到 keytool（失败现场）"
+            echo "JAVA_HOME_17_X64=${JAVA_HOME_17_X64:-(空)}  JAVA_HOME=${JAVA_HOME:-(空)}"
+            ls -1 /usr/lib/jvm 2>/dev/null || echo "(无 /usr/lib/jvm)"
+            echo "::error::runner 上找不到 keytool，无法生成 debug keystore"
             exit 1
           fi
-          echo "✅ Android 导出模板就位：$(ls "$DST_T"/*/android_debug.apk)"
+          echo "使用 keytool：$KT"
 
-          # 编辑器设置：Godot 靠 export/android/android_sdk_path 找 apksigner / zipalign。
-          # 4.3 起编辑器设置按次版本号命名（editor_settings-4.3.tres）。
-          mkdir -p "$HOME/.config/godot"
-          ES="$HOME/.config/godot/editor_settings-${GODOT_MINOR}.tres"
-          SRC_ES="/root/.config/godot/editor_settings-${GODOT_MINOR}.tres"
-          if [ -f "$SRC_ES" ] && [ "$SRC_ES" != "$ES" ]; then
-            cp -a "$SRC_ES" "$ES"
-            echo "已复制镜像自带编辑器设置。"
-          fi
-          if [ ! -f "$ES" ]; then
-            echo "镜像未提供编辑器设置，自行生成一份最小配置。"
-            printf '%s\n' '[gd_resource type="EditorSettings" format=3]' '' '[resource]' > "$ES"
-          fi
-          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/lib/android-sdk}}"
-          JDK="${JAVA_HOME:-}"
-          if [ -z "$JDK" ] && command -v javac >/dev/null 2>&1; then
-            JDK="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
-          fi
-          grep -q 'export/android/android_sdk_path' "$ES" \
-            || echo "export/android/android_sdk_path = \"$SDK\"" >> "$ES"
-          if [ -n "$JDK" ]; then
-            grep -q 'export/android/java_sdk_path' "$ES" \
-              || echo "export/android/java_sdk_path = \"$JDK\"" >> "$ES"
-          fi
-          echo "----- $ES -----"
-          cat "$ES"
-
-      # ----------------------------------------------------------------------
-      # Godot 4 headless 导出 Android 必须能拿到 debug keystore，否则报
-      # "Could not find keystore, unable to export"。这里显式生成一份并用环境变量注入，
-      # 不依赖镜像自带的 /root/debug.keystore（宁可冗余，不可失败）。
-      - name: "步骤6 · 生成 debug keystore 并注入环境变量"
-        run: |
-          set -eu
-          KS="$GITHUB_WORKSPACE/debug.keystore"
+          KS="$RUNNER_TEMP/debug.keystore"
           rm -f "$KS"
-          keytool -keyalg RSA -genkeypair \
+          "$KT" -keyalg RSA -genkeypair \
             -alias androiddebugkey \
             -keypass android \
             -keystore "$KS" \
@@ -211,10 +427,11 @@ jobs:
             -validity 9999 \
             -deststoretype pkcs12
           ls -la "$KS"
-          keytool -list -keystore "$KS" -storepass android || true
+
           # Godot 4.2+ 支持用环境变量覆盖预设里的 keystore 配置。
-          # PASSWORD / PASS 两种命名都写，规避版本间命名差异（多写一个不会有副作用）。
+          # PASSWORD / PASS 两种命名都写，规避版本间命名差异（多写一个无副作用）。
           {
+            echo "KEYSTORE_PATH=$KS"
             echo "GODOT_ANDROID_KEYSTORE_DEBUG_PATH=$KS"
             echo "GODOT_ANDROID_KEYSTORE_DEBUG_USER=androiddebugkey"
             echo "GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD=android"
@@ -222,97 +439,247 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "✅ debug keystore 已生成并注入环境变量。"
 
-      # ----------------------------------------------------------------------
-      # 首次 CI 检出没有 .godot/ 导入缓存。--export-* 虽然隐含 --import，
-      # 但先单独跑一遍导入，能把"资源导入错误"和"导出错误"在日志里分开，便于定位。
-      # Godot 4.3 已提供 --import（等价于 --editor --quit 并等待导入完成）；
-      # 这里两种都跑一遍，任一失败都不阻塞，真正的判定交给下一步导出。
-      - name: "步骤7 · 预导入资源（.godot 缓存）"
+      # ======================================================================
+      # Godot 通过编辑器设置里的 export/android/android_sdk_path 找 apksigner/zipalign。
+      # 裸 runner 上 $HOME=/home/runner，文件位置固定为
+      #   ~/.config/godot/editor_settings-<主次版本>.tres
+      # 这里把 runner 的**真实** SDK / JDK 路径从环境变量读出来写进去（不硬编码）。
+      - name: "步骤10 · 写入 Godot 编辑器设置（SDK / JDK / keystore）"
         run: |
-          set -u
-          cd "$GITHUB_WORKSPACE/$PROJECT_DIR"
-          set +e
-          timeout 900 godot --headless --import
-          echo "[--import] 退出码=$?"
-          timeout 900 godot --headless --editor --quit
-          echo "[--editor --quit] 退出码=$?"
-          set -e
-          echo "----- .godot 目录 -----"
-          ls -la .godot 2>/dev/null || echo "(未生成 .godot，若下一步导出成功可忽略)"
+          set -euo pipefail
+          echo ">>> 诊断锚点 F · 编辑器设置与 SDK"
 
-      # ----------------------------------------------------------------------
-      # Godot 4 已把 --export 改名为 --export-debug / --export-release，旧名会报 unknown option。
-      # 官方文档明确："<path> 目录必须已存在"，所以先 mkdir。
-      - name: "步骤8 · 导出 Android APK（debug）"
-        run: |
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
+            echo ">>> 诊断锚点 F1 · Android SDK 未找到（失败现场）"
+            echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-(空)}  ANDROID_HOME=${ANDROID_HOME:-(空)}"
+            ls -la /usr/local/lib/android 2>/dev/null || true
+            echo "::error::runner 上未找到 Android SDK"
+            exit 1
+          fi
+          # 末尾 `|| true` 必须保留：build-tools 目录不存在时 find 返回非 0，
+          # 叠加 pipefail 会让本步在打印下面的诊断之前就静默死掉（只剩 exit code 1）。
+          APKSIGNER="$(find "$SDK/build-tools" -name apksigner -print 2>/dev/null | sort | tail -1 || true)"
+          if [ -z "$APKSIGNER" ]; then
+            echo ">>> 诊断锚点 F2 · SDK 内找不到 apksigner（失败现场）"
+            ls -la "$SDK" || true
+            ls -la "$SDK/build-tools" 2>/dev/null || echo "(无 build-tools 目录)"
+            echo "::error::SDK 内没有 apksigner，无法签名 APK"
+            exit 1
+          fi
+          echo "SDK       = $SDK"
+          echo "apksigner = $APKSIGNER"
+
+          JDK="${JAVA_HOME_17_X64:-${JAVA_HOME:-}}"
+          if [ -n "$JDK" ] && [ ! -d "$JDK" ]; then JDK=""; fi
+          echo "JDK       = ${JDK:-(未设置，交给 Godot 自行探测)}"
+
+          # 写 $GITHUB_ENV 只对**后续步骤**生效，对本步无效；
+          # 而本步末尾就要调用生成脚本，所以必须同时 export 到当前 shell，
+          # 否则生成脚本里的 set -u 会因 ANDROID_SDK_DIR 未定义而 exit 1。
+          export ANDROID_SDK_DIR="$SDK"
+          export JAVA_SDK_DIR="$JDK"
+          export APKSIGNER_BIN="$APKSIGNER"
+          {
+            echo "ANDROID_SDK_DIR=$SDK"
+            echo "JAVA_SDK_DIR=$JDK"
+            echo "APKSIGNER_BIN=$APKSIGNER"
+          } >> "$GITHUB_ENV"
+
+          # 生成脚本：导入步骤可能重写编辑器设置，故导出前会再调用一次。
+          cat > "$RUNNER_TEMP/gen_editor_settings.sh" <<'ESEOF'
+          #!/usr/bin/env bash
           set -eu
+          ES_DIR="$HOME/.config/godot"
+          ES="$ES_DIR/editor_settings-${GODOT_MINOR}.tres"
+          mkdir -p "$ES_DIR"
+          {
+            echo '[gd_resource type="EditorSettings" format=3]'
+            echo ''
+            echo '[resource]'
+            echo "export/android/android_sdk_path = \"${ANDROID_SDK_DIR}\""
+            if [ -n "${JAVA_SDK_DIR:-}" ]; then
+              echo "export/android/java_sdk_path = \"${JAVA_SDK_DIR}\""
+            fi
+            echo "export/android/debug_keystore = \"${KEYSTORE_PATH}\""
+            echo 'export/android/debug_keystore_user = "androiddebugkey"'
+            echo 'export/android/debug_keystore_pass = "android"'
+          } > "$ES"
+          echo "----- $ES -----"
+          cat "$ES"
+          ESEOF
+          chmod +x "$RUNNER_TEMP/gen_editor_settings.sh"
+          "$RUNNER_TEMP/gen_editor_settings.sh"
+          echo "✅ 编辑器设置已写入。"
+
+      # ======================================================================
+      # 首次 CI 检出没有 .godot/ 导入缓存。--export-* 虽隐含导入，
+      # 但先单独跑一遍，能把"资源导入错误"和"导出错误"在日志里分开。
+      # 两条命令任一失败都不阻塞，真正的判定交给步骤12。
+      - name: "步骤11 · 预导入资源（不阻塞）"
+        run: |
+          set +e
+          cd "$GITHUB_WORKSPACE/$PROJECT_DIR"
+          timeout 900 "$GODOT_BIN" --headless --import
+          echo "[--import] 退出码=$?"
+          timeout 900 "$GODOT_BIN" --headless --editor --quit
+          echo "[--editor --quit] 退出码=$?"
+          echo "----- .godot 目录 -----"
+          ls -la .godot 2>/dev/null || echo "(未生成 .godot；若下一步导出成功可忽略)"
+          exit 0
+
+      # ======================================================================
+      - name: "步骤12 · 导出 Android APK（debug）"
+        run: |
+          set -uo pipefail
+          echo ">>> 诊断锚点 G · 导出"
+          # 导入步骤可能覆盖编辑器设置，导出前再确认一次
+          "$RUNNER_TEMP/gen_editor_settings.sh"
+
           mkdir -p "$GITHUB_WORKSPACE/$OUT_DIR"
           cd "$GITHUB_WORKSPACE/$PROJECT_DIR"
-          godot --headless --verbose \
-            --export-debug "$PRESET_NAME" \
-            "$GITHUB_WORKSPACE/$OUT_APK"
+          LOG="$RUNNER_TEMP/export.log"
 
-      # ----------------------------------------------------------------------
+          set +e
+          "$GODOT_BIN" --headless --verbose \
+            --export-debug "$PRESET_NAME" \
+            "$GITHUB_WORKSPACE/$OUT_APK" 2>&1 | tee "$LOG"
+          RC=${PIPESTATUS[0]}
+          set -e
+
+          echo ">>> 诊断锚点 G1 · 导出命令退出码 = $RC"
+          if [ "$RC" -ne 0 ] || [ ! -f "$GITHUB_WORKSPACE/$OUT_APK" ]; then
+            echo ">>> 诊断锚点 G2 · 导出失败现场"
+            echo "----- 已知错误关键词命中情况 -----"
+            grep -inE "could not find keystore|export template|no export preset|preset .* not found|apksigner|zipalign|non-existent resource|Failed to export|Unknown command|error at|SCRIPT ERROR" \
+              "$LOG" | tail -40 || echo "(未命中已知关键词，请看上方完整日志)"
+            echo "----- 输出目录 -----"
+            ls -laR "$GITHUB_WORKSPACE/$OUT_DIR" 2>/dev/null || true
+            echo "::error::Godot 导出失败（退出码 $RC）"
+            exit 1
+          fi
+          echo "✅ 导出命令完成。"
+
+      # ======================================================================
       # Godot 偶有"报错但退出码为 0"的情况，必须自己校验产物。
-      - name: "步骤9 · 校验 APK 存在、非空且已签名"
+      - name: "步骤13 · 校验 APK（存在 / 体积 / 已签名）"
         run: |
-          set -eu
+          set -euo pipefail
+          echo ">>> 诊断锚点 H · 产物校验"
           APK="$GITHUB_WORKSPACE/$OUT_APK"
           if [ ! -f "$APK" ]; then
-            echo "::error::APK 未生成：$APK"
-            ls -laR "$GITHUB_WORKSPACE/$OUT_DIR" || true
-            exit 1
+            echo ">>> 诊断锚点 H1 · APK 未生成"
+            ls -laR "$GITHUB_WORKSPACE/$OUT_DIR" 2>/dev/null || true
+            echo "::error::APK 未生成：$APK"; exit 1
           fi
           SZ=$(stat -c%s "$APK")
           echo "APK 路径：$APK"
           echo "APK 体积：$SZ 字节"
           if [ "$SZ" -lt 1000000 ]; then
-            echo "::error::APK 体积异常（${SZ} 字节，小于 1MB），基本可以断定导出不完整。"
-            exit 1
-          fi
-          echo "----- APK 内容抽样 -----"
-          unzip -l "$APK" | head -n 30 || true
-          echo "----- 签名校验 -----"
-          APKSIGNER="$(ls -1 "${ANDROID_HOME:-/usr/lib/android-sdk}"/build-tools/*/apksigner 2>/dev/null | tail -n1 || true)"
-          if [ -n "$APKSIGNER" ]; then
-            if "$APKSIGNER" verify --print-certs "$APK"; then
-              echo "✅ APK 已正确签名，可直接侧载安装。"
-            else
-              echo "::warning::apksigner 校验未通过 —— APK 可能未签名，手机安装时会提示「应用未安装」。请检查 export_presets.cfg 的 package/signed 是否为 true。"
-            fi
-          else
-            echo "::warning::未找到 apksigner，跳过签名校验。"
+            echo ">>> 诊断锚点 H2 · APK 体积异常"
+            echo "::error::APK 仅 ${SZ} 字节（<1MB），导出不完整"; exit 1
           fi
 
-      # ----------------------------------------------------------------------
-      - name: "步骤10 · 上传 APK 制品"
+          echo "----- 包内抽样（确认数据 JSON 已打进包）-----"
+          unzip -l "$APK" | head -n 40 || true
+          echo "----- 包内 JSON 数量 -----"
+          NJSON=$(unzip -l "$APK" | grep -c "\.json" || true)
+          echo "APK 内 .json 条目数：$NJSON"
+
+          echo "----- 签名校验 -----"
+          if [ -n "${APKSIGNER_BIN:-}" ] && [ -x "${APKSIGNER_BIN}" ]; then
+            if "$APKSIGNER_BIN" verify --print-certs "$APK"; then
+              echo "✅ APK 已正确签名，可直接侧载安装。"
+            else
+              echo ">>> 诊断锚点 H3 · 签名校验未通过"
+              echo "::error::APK 未正确签名，装到手机会提示「应用未安装」。请检查 export_presets.cfg 的 package/signed 是否为 true。"
+              exit 1
+            fi
+          else
+            echo "::warning::未找到 apksigner，跳过签名校验（无法保证可安装）。"
+          fi
+
+      # ======================================================================
+      - name: "步骤14 · 上传 APK 制品"
+        # 【主理人一致性拦截 · E7-S3】必须 always()。
+        # 步骤13 的签名校验若未通过会 exit 1，若本步骤不加 always()，
+        # 就会出现「APK 其实已经导出成功，却因最后一道校验没过而不上传」
+        # 的最坏情况 —— 用户白等一轮仍两手空空。
+        # 产物先落袋，好坏由用户装机验证；job 整体仍会因步骤13 判红，不会掩盖问题。
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: commart-android
           path: build/android/commart.apk
+          # APK 完全没生成时这步会再红一次，属预期内噪音（此时 job 早已失败）。
           if-no-files-found: error
           retention-days: 14
 
       # ======================================================================
+      # ★★★ 失败时只需复制这一步的日志 ★★★
+      # 把所有关键环境信息汇总打印一次，用户不必自己找是哪一步红了。
+      - name: "步骤15 · 失败诊断汇总（★失败时复制这一步给我★）"
+        if: failure()
+        run: |
+          set +e
+          echo "=========================================================="
+          echo ">>> 诊断锚点 Z · 失败汇总（把这一整步内容复制回传即可）"
+          echo "=========================================================="
+          echo "[Z1] Godot 引擎"
+          echo "GODOT_BIN=${GODOT_BIN:-(未设置 → 说明步骤4 就失败了)}"
+          [ -n "${GODOT_BIN:-}" ] && [ -x "${GODOT_BIN}" ] && "$GODOT_BIN" --headless --version
+          echo
+          echo "[Z2] 导出模板目录树"
+          find "$HOME/.local/share/godot/export_templates" -maxdepth 3 2>/dev/null | head -40 \
+            || echo "(模板根目录不存在 → 步骤5 未完成)"
+          echo
+          echo "[Z3] 编辑器设置内容"
+          cat "$HOME/.config/godot/editor_settings-${GODOT_MINOR:-4.3}.tres" 2>/dev/null \
+            || echo "(编辑器设置不存在 → 步骤10 未完成)"
+          echo
+          echo "[Z4] Android SDK / JDK"
+          echo "ANDROID_SDK_DIR=${ANDROID_SDK_DIR:-(未设置)}"
+          echo "JAVA_SDK_DIR=${JAVA_SDK_DIR:-(未设置)}"
+          echo "APKSIGNER_BIN=${APKSIGNER_BIN:-(未设置)}"
+          echo
+          echo "[Z5] keystore"
+          ls -la "${KEYSTORE_PATH:-/nonexistent}" 2>/dev/null || echo "(keystore 不存在 → 步骤9 未完成)"
+          echo
+          echo "[Z6] 字体与主题"
+          ls -la "$FONT_PATH" 2>/dev/null || echo "(无字体，已走降级主题)"
+          cat "$THEME_PATH" 2>/dev/null
+          echo
+          echo "[Z7] 输出目录"
+          ls -laR "$GITHUB_WORKSPACE/$OUT_DIR" 2>/dev/null || echo "(输出目录不存在 → 未走到导出)"
+          echo
+          echo "[Z8] 导出日志最后 60 行"
+          tail -n 60 "$RUNNER_TEMP/export.log" 2>/dev/null || echo "(无导出日志 → 未走到步骤12)"
+          echo
+          echo "[Z9] 导出日志中的错误行"
+          grep -inE "could not find keystore|export template|no export preset|apksigner|zipalign|non-existent resource|Failed to export|Unknown command|SCRIPT ERROR|ERROR:" \
+            "$RUNNER_TEMP/export.log" 2>/dev/null | tail -40 || echo "(无匹配)"
+          echo "=========================================================="
+          exit 0
+
+      # ======================================================================
       # 上架 Google Play 用的 release 签名（默认关闭，仅作指引）
       # ----------------------------------------------------------------------
-      # 需要产出可上架的 release APK / AAB 时：
       # 1) 本地生成 keystore：
       #      keytool -genkey -v -keystore commart.keystore -alias commart \
       #              -keyalg RSA -keysize 2048 -validity 10000
       # 2) base64 编码：base64 -w0 commart.keystore > commart.keystore.b64
       # 3) 仓库 Settings → Secrets and variables → Actions → Secrets 里配置：
       #      PLAY_KEYSTORE_BASE64 / KEYSTORE_ALIAS / KEYSTORE_PASSWORD
-      # 4) 取消下面注释。注意 release 走的是 --export-release + RELEASE 系列环境变量，
-      #    不需要改 export_presets.cfg（环境变量优先级高于预设里的 keystore/release*）。
-      # 5) 若要出 AAB：把 export_presets.cfg 的 gradle_build/export_format 改为 1
-      #    且 gradle_build/use_gradle_build 改为 true（用 gradle 构建，耗时更长）。
+      # 4) 取消下面注释。release 走 --export-release + RELEASE 系列环境变量，
+      #    不需要改 export_presets.cfg（环境变量优先级高于预设）。
+      # 5) 若要出 AAB：export_presets.cfg 的 gradle_build/export_format 改为 1，
+      #    且 gradle_build/use_gradle_build 改为 true（走完整 gradle 构建，更慢更易错）。
       #
       # - name: "步骤R1 · 还原 release keystore"
       #   run: |
-      #     echo "${{ secrets.PLAY_KEYSTORE_BASE64 }}" | base64 -d > "$GITHUB_WORKSPACE/release.keystore"
+      #     echo "${{ secrets.PLAY_KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/release.keystore"
       #     {
-      #       echo "GODOT_ANDROID_KEYSTORE_RELEASE_PATH=$GITHUB_WORKSPACE/release.keystore"
+      #       echo "GODOT_ANDROID_KEYSTORE_RELEASE_PATH=$RUNNER_TEMP/release.keystore"
       #       echo "GODOT_ANDROID_KEYSTORE_RELEASE_USER=${{ secrets.KEYSTORE_ALIAS }}"
       #       echo "GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}"
       #       echo "GODOT_ANDROID_KEYSTORE_RELEASE_PASS=${{ secrets.KEYSTORE_PASSWORD }}"
@@ -322,14 +689,7 @@ jobs:
       #   run: |
       #     mkdir -p "$GITHUB_WORKSPACE/build/android"
       #     cd "$GITHUB_WORKSPACE/$PROJECT_DIR"
-      #     godot --headless --verbose \
+      #     "$GODOT_BIN" --headless --verbose \
       #       --export-release "$PRESET_NAME" \
       #       "$GITHUB_WORKSPACE/build/android/commart-release.apk"
-      #
-      # - name: "步骤R3 · 上传 release 制品"
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: commart-android-release
-      #     path: build/android/commart-release.apk
-      #     if-no-files-found: error
       # ======================================================================
