@@ -28,7 +28,7 @@ var choices: Array = []     # Array[Choice]
 var review = null           # was: var review: Review = null（Review 定义在后方）
 var force_boundary: bool = false
 
-func _init(d: Dictionary) -> void:
+func _init(d: Dictionary):
     id = d.get("id", "")
     skill = d.get("skill", "")
     title = d.get("title", "")
@@ -47,12 +47,12 @@ func _init(d: Dictionary) -> void:
         review = Review.new(d["review"])
 
 
-class Npc extends RefCounted
+class Npc:
     var name: String = ""
     var role: String = ""
     var mood: String = ""
     var line: String = ""   # 可选（G3）；空串表示场景卡仅用 context + impulse
-    func _init(d: Dictionary) -> void:
+    func _init(d: Dictionary):
         name = d.get("name", "")
         role = d.get("role", "")
         mood = d.get("mood", "")
@@ -64,34 +64,34 @@ class Npc extends RefCounted
 #   和 Choice(var consequence: Consequence) 都在类型注解里引用了 Consequence，
 #   如果 Consequence 在它们后面，解析到类型注解时类还未注册 → 整个 class_name
 #   Scenario 解析失败 → DataLoader autoload 无法创建 → 工程导不出。
-class Consequence extends RefCounted
+class Consequence:
     # 只读展示字段。relationship_signal 永不写盘（ADR-005 / E2 / E4）。
     var npc_reaction: String = ""
     var relationship_signal: int = 0   # -1 / 0 / +1，仅 ConsequenceStage 渲染用
     var judgement: String = ""
-    func _init(d: Dictionary) -> void:
+    func _init(d: Dictionary):
         npc_reaction = d.get("npcReaction", "")
         relationship_signal = int(d.get("relationshipSignal", 0))
         judgement = d.get("judgement", "")
 
 
-class Trigger extends RefCounted
+class Trigger:
     var candidates: Array = []   # Array[String]
     var correct: String = ""
     var miss: Consequence = null  # 可选（G2 方案A：识别错播放的错位后果）
-    func _init(d: Dictionary) -> void:
+    func _init(d: Dictionary):
         candidates = d.get("candidates", [])
         correct = d.get("correct", "")
         if d.has("miss"):
             miss = Consequence.new(d["miss"])
 
 
-class Choice extends RefCounted
+class Choice:
     var id: String = ""
     var type: String = ""        # skilled / trap / boundary
     var text: String = ""
     var consequence: Consequence = null
-    func _init(d: Dictionary) -> void:
+    func _init(d: Dictionary):
         id = d.get("id", "")
         type = d.get("type", "")
         text = d.get("text", "")
@@ -99,11 +99,11 @@ class Choice extends RefCounted
             consequence = Consequence.new(d["consequence"])
 
 
-class Review extends RefCounted
+class Review extends RefCounted:
     var mechanism: String = ""
     var case: String = ""        # 可选（A7 降级）：缺失则 has_review_case=false，不崩溃
     var migration: String = ""
-    func _init(d: Dictionary) -> void:
+    func _init(d: Dictionary):
         mechanism = d.get("mechanism", "")
         case = d.get("case", "")
         migration = d.get("migration", "")
