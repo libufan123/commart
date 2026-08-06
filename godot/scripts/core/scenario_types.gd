@@ -9,17 +9,23 @@
 # 字段通过 _init(d) 从数据字典一次性构造；运行时只读取、不回填（ADR-001 数据驱动）。
 # GDScript 无真 const 属性，此处以约定 + 注释保证「只读」：除 DataLoader 构造期外不赋值。
 
+# ★ E7-S4 根因修复（第二轮）：Scenario 自身的成员变量也不能用内部类做类型注解。
+#   Godot 4 GDScript 按源文件顺序注册内部类，class_name Scenario 声明后立即解析其
+#   成员变量。var npc: Npc / var triggers: Trigger / var review: Review 这三行的
+#   类型注解引用的类（Npc/Trigger/Review）都被定义在后面 → 解析时类未注册 → 整个
+#   class_name 编译失败。改为无类型注解（运行时 _init 仍会创建正确的 Npc/Trigger/
+#   Review 实例，行为完全不变），消除所有前向引用依赖。
 class_name Scenario extends RefCounted
 var id: String = ""
 var skill: String = ""
 var title: String = ""
 var context: String = ""
-var npc: Npc = null
+var npc = null              # was: var npc: Npc = null（Npc 定义在后方，前向引用）
 var impulse: String = ""
 var schema_version: String = "1"
-var triggers: Trigger = null
-var choices: Array = []        # Array[Choice]
-var review: Review = null
+var triggers = null         # was: var triggers: Trigger = null（Trigger 定义在后方）
+var choices: Array = []     # Array[Choice]
+var review = null           # was: var review: Review = null（Review 定义在后方）
 var force_boundary: bool = false
 
 func _init(d: Dictionary) -> void:
