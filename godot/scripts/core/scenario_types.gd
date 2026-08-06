@@ -53,6 +53,22 @@ class Npc extends RefCounted
         line = d.get("line", "")
 
 
+# ★ E7-S4 修复：Consequence 必须定义在 Trigger / Choice 之前。
+#   Godot 4 GDScript 按源文件从上到下注册内部类；Trigger(var miss: Consequence)
+#   和 Choice(var consequence: Consequence) 都在类型注解里引用了 Consequence，
+#   如果 Consequence 在它们后面，解析到类型注解时类还未注册 → 整个 class_name
+#   Scenario 解析失败 → DataLoader autoload 无法创建 → 工程导不出。
+class Consequence extends RefCounted
+    # 只读展示字段。relationship_signal 永不写盘（ADR-005 / E2 / E4）。
+    var npc_reaction: String = ""
+    var relationship_signal: int = 0   # -1 / 0 / +1，仅 ConsequenceStage 渲染用
+    var judgement: String = ""
+    func _init(d: Dictionary) -> void:
+        npc_reaction = d.get("npcReaction", "")
+        relationship_signal = int(d.get("relationshipSignal", 0))
+        judgement = d.get("judgement", "")
+
+
 class Trigger extends RefCounted
     var candidates: Array = []   # Array[String]
     var correct: String = ""
@@ -75,17 +91,6 @@ class Choice extends RefCounted
         text = d.get("text", "")
         if d.has("consequence"):
             consequence = Consequence.new(d["consequence"])
-
-
-class Consequence extends RefCounted
-    # 只读展示字段。relationship_signal 永不写盘（ADR-005 / E2 / E4）。
-    var npc_reaction: String = ""
-    var relationship_signal: int = 0   # -1 / 0 / +1，仅 ConsequenceStage 渲染用
-    var judgement: String = ""
-    func _init(d: Dictionary) -> void:
-        npc_reaction = d.get("npcReaction", "")
-        relationship_signal = int(d.get("relationshipSignal", 0))
-        judgement = d.get("judgement", "")
 
 
 class Review extends RefCounted
